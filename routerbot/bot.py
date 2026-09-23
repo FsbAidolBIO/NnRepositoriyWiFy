@@ -1065,9 +1065,8 @@ def _make_session(proxy: str | None):
     if not proxy:
         return None
     if proxy.startswith(('socks://', 'socks4://', 'socks5://')):
-        try:
-            import aiohttp_socks  # noqa: F401
-        except ImportError:
+        import importlib.util
+        if importlib.util.find_spec('aiohttp_socks') is None:
             raise SystemExit(
                 'Для socks-прокси нужен пакет aiohttp-socks:\n'
                 '  pip install aiohttp-socks\n'
