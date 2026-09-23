@@ -11,16 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Callable, TypeVar
 
 from tplinkrouterc6u.common.exception import ClientException
 
-from .c80_client import ArcherC80Client
+from .c80_client import ArcherC80Client, RouterCommandError
 from .config import Settings
 
 log = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+# Роутер отверг команду, потому что сессию выбил другой клиент (веб-морда,
+# второй экземпляр бота). Лечится повторным логином.
+SESSION_CONFLICT_CODE = '00006'
 
 
 class RouterService:
@@ -47,19 +52,29 @@ class RouterService:
             return await asyncio.to_thread(self._run_sync, action)
 
     def _run_sync(self, action: Callable[[ArcherC80Client], T]) -> T:
-        client = self._new_client()
-        try:
-            client.authorize()
-        except ClientException:
-            log.warning('Не удалось авторизоваться на роутере', exc_info=True)
-            raise
-        try:
-            return action(client)
-        finally:
+        attempt = 0
+        while True:
+            attempt += 1
+            client = self._new_client()
             try:
-                client.logout()
-            except Exception:  # noqa: BLE001 - logout не должен ронять операцию
-                log.debug('Ошибка при logout (не критично)', exc_info=True)
+                client.authorize()
+            except ClientException:
+                log.warning('Не удалось авторизоваться на роутере', exc_info=True)
+                raise
+            try:
+                return action(client)
+            except RouterCommandError as exc:
+                if SESSION_CONFLICT_CODE in str(exc) and attempt < 3:
+                    log.warning('Сессию перехватили (код %s), переавторизуюсь '
+                                'и повторяю (попытка %d/3)', SESSION_CONFLICT_CODE, attempt + 1)
+                    time.sleep(1)
+                    continue
+                raise
+            finally:
+                try:
+                    client.logout()
+                except Exception:  # noqa: BLE001 - logout не должен ронять операцию
+                    log.debug('Ошибка при logout (не критично)', exc_info=True)
 
 
 async def check_router_reachable(settings: Settings) -> str:

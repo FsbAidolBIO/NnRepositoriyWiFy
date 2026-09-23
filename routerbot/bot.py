@@ -113,9 +113,20 @@ async def _edit_safe(message: Message, text: str, reply_markup: InlineKeyboardMa
 
 def _err_text(exc: Exception) -> str:
     from html import escape
+    text = str(exc)
+    if '00006' in text:
+        return (
+            '⚔️ <b>Конфликт сессий с роутером.</b>\n'
+            'C80 обслуживает только одну админку одновременно, и сессию перехватили.\n\n'
+            'Обычные воры:\n'
+            '• открытая в браузере <code>192.168.0.1</code> — закрой вкладку;\n'
+            '• второй запущенный бот — проверь <code>pgrep -af routerbot</code>;\n'
+            '• посидевшая долго сессия — я уже перелогинился и повторил.\n\n'
+            'Попробуй команду ещё раз — обычно проходит.'
+        )
     return (
         '❌ <b>Не удалось выполнить операцию.</b>\n'
-        f'<code>{escape(str(exc))}</code>\n\n'
+        f'<code>{escape(text)}</code>\n\n'
         'Проверь, что роутер на связи, пароль в .env верный и никто не сидит '
         'в веб-интерфейсе роутера одновременно с ботом (одна сессия!).'
     )

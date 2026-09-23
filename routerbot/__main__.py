@@ -11,9 +11,40 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
+
+PIDFILE = Path('.bot.pid')
+
+
+def _single_instance_guard() -> None:
+    """Не даёт запустить второй экземпляр бота: он воровал бы сессию роутера
+    у первого (и наоборот) — отсюда ошибки 'код 00006'."""
+    if PIDFILE.exists():
+        old_pid = PIDFILE.read_text(encoding='utf-8').strip()
+        proc = Path('/proc') / old_pid
+        if proc.exists():
+            try:
+                cmdline = (proc / 'cmdline').read_bytes().replace(b'\0', b' ')
+            except OSError:
+                cmdline = b''
+            if b'routerbot' in cmdline:
+                print(f'❌ Бот уже запущен (PID {old_pid}). Два бота = конфликт сессий роутера!\n'
+                      f'   Останови его командой: kill {old_pid}')
+                sys.exit(1)
+        # старый процесс мёртв или pid занят чем-то другим — стартуем
+    PIDFILE.write_text(str(os.getpid()), encoding='utf-8')
+
+
+def _release_instance() -> None:
+    try:
+        if PIDFILE.read_text(encoding='utf-8').strip() == str(os.getpid()):
+            PIDFILE.unlink()
+    except OSError:
+        pass
 
 
 def _load_settings_or_exit():
@@ -114,10 +145,13 @@ def _probe_block(block_arg: str) -> int:
 def _run() -> int:
     from .bot import main
 
+    _single_instance_guard()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print('\nБот остановлен.')
+    finally:
+        _release_instance()
     return 0
 
 

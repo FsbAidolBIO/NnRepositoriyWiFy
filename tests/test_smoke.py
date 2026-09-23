@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import tempfile
 import unittest
 import sys
@@ -378,6 +380,81 @@ class MtprotoCheckerTest(unittest.TestCase):
         self.assertIsNone(parse_target('просто текст'))
         self.assertIsNone(parse_target('https://t.me/proxy?port=443'))
         self.assertIsNone(parse_target(''))
+
+
+class SessionConflictTest(unittest.TestCase):
+    """00006 = веб-морда/двойник выбил сессию; сервис должен перелогиниться и повторить."""
+
+    def _settings(self):
+        return load_settings({'TG_BOT_TOKEN': '1:a', 'ROUTER_PASSWORD': 'x'})
+
+    def test_retry_on_session_conflict(self):
+        from routerbot.c80_client import RouterCommandError
+        from routerbot.service import RouterService
+
+        class FakeClient:
+            calls = 0
+
+            def authorize(self):
+                FakeClient.calls += 1
+
+            def logout(self):
+                pass
+
+        service = RouterService(self._settings())
+        service._new_client = lambda: FakeClient()
+        attempts = {'n': 0}
+
+        def action(_client):
+            attempts['n'] += 1
+            if attempts['n'] == 1:
+                raise RouterCommandError('Роутер отклонил команду (код 00006).')
+            return 'ok'
+
+        result = asyncio.run(service.run(action))
+        self.assertEqual(result, 'ok')
+        self.assertEqual(attempts['n'], 2)         # операцию повторили
+        self.assertEqual(FakeClient.calls, 2)      # с новой авторизацией
+
+    def test_gives_up_after_third_conflict(self):
+        from routerbot.c80_client import RouterCommandError
+        from routerbot.service import RouterService
+
+        class FakeClient:
+            def authorize(self):
+                pass
+
+            def logout(self):
+                pass
+
+        service = RouterService(self._settings())
+        service._new_client = lambda: FakeClient()
+
+        def action(_client):
+            raise RouterCommandError('Роутер отклонил команду (код 00006).')
+
+        with self.assertRaises(RouterCommandError):
+            asyncio.run(service.run(action))
+
+    def test_err_text_explains_conflict(self):
+        from routerbot.bot import _err_text
+        text = _err_text(Exception('Роутер отклонил команду (код 00006).'))
+        self.assertIn('Конфликт сессий', text)
+        self.assertIn('pgrep', text)
+
+    def test_pid_guard_ignores_stale_pidfile(self):
+        import routerbot.__main__ as m
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pidfile = tmp / '.bot.pid'
+            pidfile.write_text('99999999')  # такого pid точно нет — файл устаревший
+            original = m.PIDFILE
+            m.PIDFILE = pidfile
+            try:
+                m._single_instance_guard()  # не должен выйти
+            finally:
+                m.PIDFILE = original
+            self.assertEqual(pidfile.read_text(), str(os.getpid()))
 
 
 class WolTest(unittest.TestCase):
